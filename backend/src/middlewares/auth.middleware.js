@@ -1,6 +1,6 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
 import jwt from "jsonwebtoken";
-import { ApiError } from "../utils/ApiResponse.js";
+import { ApiError } from "../utils/ApiError.js";
 import { User } from "../models/user.model.js";
 
 export const verifyJWT = asyncHandler(async (req,res,next) => {
@@ -22,4 +22,5 @@ export const verifyJWT = asyncHandler(async (req,res,next) => {
    } catch (error) {
     throw new ApiError(401 , error?.message ||  "Invalid or expired access token")
    }
+   next()
 })
