@@ -2,11 +2,10 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import {ApiError} from "../utils/ApiError.js"
 import { User } from "../models/user.model.js";
 import uploadOnCloudinary from "../utils/cloudinary.js";
-// import { createElement } from "react";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import jwt from 'jsonwebtoken'
 import { app } from "../app.js";
-import { useSyncExternalStore } from "react";
+import mongoose from "mongoose";
 
 // token generator method
 const generateAccessAndRefreshToken = async(userId) => {
@@ -143,8 +142,8 @@ if (!user) {
 // logout user
 const logOutUser = asyncHandler(async (req,res) => {
     User.findByIdAndUpdate(req.user._id , {
-        $set: {
-            refreshToken: undefined
+        $unset: {
+            refreshToken: 1
         },
         },
         {new: true}
@@ -157,7 +156,7 @@ const logOutUser = asyncHandler(async (req,res) => {
         .clearCookie("refreshToken" , options)
         .json(new ApiResponse(200 , null , "User logged out successfully"))
     })
-
+ 
     const refreshAccessToken = asyncHandler(async (req,res) => {
         const incomingRefreshToken = req.cookies.refreshToken || req.body.refreshToken
         if(!incomingRefreshToken){
@@ -169,7 +168,7 @@ const logOutUser = asyncHandler(async (req,res) => {
                incomingRefreshToken,
                process.env.REFRESH_TOKEN_SECRET
            )
-           const user = User.findById(decodedToken?._id)
+           const user = await User.findById(decodedToken?._id)
            if(!user){
                throw new ApiError(401, "Invalid refresh Token")
            }
@@ -181,16 +180,16 @@ const logOutUser = asyncHandler(async (req,res) => {
            httpOnly: true,
            secure: true
         }
-        const {accessToken,newrefreshToken} = await generateAccessAndRefreshToken(user._id)
+        const {accessToken,newRefreshToken} = await generateAccessAndRefreshToken(user._id)
    
         return res
         .status(200)
         .cookie("accessToken" , accessToken,options)
-        .cookie("refreshToken",newrefreshToken,options)
+        .cookie("refreshToken",newRefreshToken,options)
         .json(
            new ApiResponse(
                200,
-               {accessToken,newrefreshToken},
+               {accessToken,newRefreshToken},
                "Access token refreshed"
            )
         )
@@ -223,26 +222,27 @@ const getCurrentUser = asyncHandler(async(req,res) => {
     .json(new ApiResponse(200,req.user,"current user fetched successfully"))
 })
 
-const updateAccountDetails = asyncHandler(async(req,res) => {
-    const {fullname,email} = req.body
-    if(!(fullname || email)){
-        throw new ApiError(400 , "All Feilds are required")
+const updateAccountDetails = asyncHandler(async (req, res) => {
+    const { fullname, email } = req.body;
+
+    if (!(fullname || email)) {
+        throw new ApiError(400, "At least one field is required");
     }
 
-    User.findByIdAndUpdate(req.user?._id,
+    const user = await User.findByIdAndUpdate(
+        req.user?._id,
         {
-            $set : {
-                fullname : fullname,
-                email:email
+            $set: {
+                fullname,
+                email
             }
         },
-        {new :true}
-    ).select("-password")
+        { new: true }
+    ).select("-password");
 
     return res.status(200)
-    .json(new ApiResponse(200,user,"Account Details Updated Successfully"))
-
-})
+        .json(new ApiResponse(200, user, "Account Details Updated Successfully"));
+});
 
 const updateUserAvatar = asyncHandler(async(req,res) => {
     const avatarLocalPath = req.file?.path
@@ -270,7 +270,7 @@ const updateUserAvatar = asyncHandler(async(req,res) => {
     
     
 })
-c
+
 
 const updateUserCoverImg = asyncHandler(async(req,res) => {
     const coverImgLocalPath = req.file?.path
@@ -288,7 +288,7 @@ const updateUserCoverImg = asyncHandler(async(req,res) => {
         req.user?._id,
         {
             $set : {
-                avatar : avatar.url
+                coverImg : coverImg.url
             }
         },
         {new :true}
@@ -328,23 +328,24 @@ const getUserChannelProfile = asyncHandler(async(req,res) => {
                 as : "subscribedTo"
             }
         },
-        {
-            $addFields : {
-            subscribersCount : {
-            $size : "$subscribers" 
-        },
-        channelToCount : {
-            $size : "$subscribedTo"
-        },
-        isSubscribed : {
-            $cond : {
-                if : {
-                    $in : [req.user?._id , "$subscribers.subscriber"]}},
-                then : true,
-                else : false
-        
-        }
+       {
+  $addFields: {
+    subscribersCount: {
+      $size: "$subscribers"
     },
+    channelToCount: {
+      $size: "$subscribedTo"
+    },
+    isSubscribed: {
+      $cond: {
+        if: {
+          $in: [req.user?._id, "$subscribers.subscriber"]
+        },
+        then: true,
+        else: false
+      }
+    }
+  }
 },
 {
     $project : {
@@ -370,6 +371,58 @@ return res.status(200)
 )
 })
 
+const getWatchHistory = asyncHandler(async (req, res) => {
+    const user = await User.aggregate([
+        {
+            // 1. Find the specific user
+            $match: {
+                _id: new mongoose.Types.ObjectId(req.user._id)
+            }
+        },
+        {
+            // 2. Join with the videos collection
+            $lookup: {
+                from: "videos",
+                localField: "watchHistory",
+                foreignField: "_id",
+                as: "watchHistory",
+                pipeline: [
+                    {
+                        // 3. Nested lookup: Join video with its owner (user)
+                        $lookup: {
+                            from: "users",
+                            localField: "owner",
+                            foreignField: "_id",
+                            as: "ownerDetails",
+                            pipeline: [
+                                {
+                                    $project: {
+                                        fullname: 1,
+                                        username: 1,
+                                        avatar: 1
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        // 4. Flatten the ownerDetails array to a single object
+                        $addFields: {
+                            ownerDetails: {
+                                $first: "$ownerDetails"
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    ]);
+
+    // 5. Always send a response!
+    return res
+        .status(200)
+        .json(new ApiResponse(200, user[0].watchHistory, "Watch history fetched successfully"));
+});
 export {registerUser}
 export {loginUser}
 export {logOutUser}
@@ -380,3 +433,4 @@ export {changeCurrentPassword}
 export {updateUserAvatar}
 export {updateUserCoverImg}
 export {getUserChannelProfile}
+export {getWatchHistory}
